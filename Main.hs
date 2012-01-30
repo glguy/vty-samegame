@@ -63,6 +63,7 @@ data GameState = GameState
   , lastScore          :: Maybe Int
   , totalScore         :: Int
   , gameOver           :: Bool
+  , redCount, greenCount, purpleCount :: Int
   }
 
 mkGameState ::
@@ -78,6 +79,9 @@ mkGameState c a ls ts = GameState
   , lastScore          = ls
   , totalScore         = ts
   , gameOver           = isGameOver a
+  , redCount           = length (filter (Just Red ==) (elems a))
+  , greenCount         = length (filter (Just Green ==) (elems a))
+  , purpleCount        = length (filter (Just Purple ==) (elems a))
   }
 
 coordUp, coordDown, coordLeft, coordRight :: Coord -> Coord
@@ -225,6 +229,8 @@ draw ctr st = Picture { pic_image = image
           <-> string def_attr "Score: "
           <|> string (with_fore_color def_attr red) (show (totalScore st))
           <-> char def_attr ' '
+          <-> countsImage
+          <-> char def_attr ' '
           <-> lastScoreImage
           <-> char def_attr ' '
           <-> gameOverImage
@@ -233,6 +239,11 @@ draw ctr st = Picture { pic_image = image
 
   controlsImage = string def_attr "Controls: ←↑↓→ ␛ ⏎"
               <-> string def_attr "New game: N"
+
+  countsImage = string def_attr "Remaining: "
+            <|> string (pieceToAttr Red) (show (redCount st))
+            <|> string (pieceToAttr Green) (' ':show (greenCount st))
+            <|> string (pieceToAttr Purple) (' ':show (purpleCount st))
 
   lastScoreImage = case lastScore st of
     Nothing -> char def_attr ' '

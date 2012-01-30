@@ -38,6 +38,7 @@ main = bracket mkVty shutdown $ \vty -> do
           EvKey KEnter   [] -> transform captureGroup
           EvKey KEsc     [] -> return ()
           EvKey (KASCII 'n') [] -> restart
+          EvResize _ _      -> putMVar eventVar Refresh >> loop
           _                 -> loop
 
       restart = do

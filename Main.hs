@@ -71,7 +71,7 @@ data GameState = GameState
   , lastScore          :: Maybe Int
   , totalScore         :: Int
   , gameOver           :: Bool
-  , counts             :: Map Piece Int
+  , pieceCounts        :: Map Piece Int
   }
 
 mkGameState ::

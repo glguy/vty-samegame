@@ -1,30 +1,38 @@
 module Main where
 
-import Data.IORef
-import Data.Array
-import Data.Maybe
 import Control.Concurrent
 import Control.Exception
 import Control.Monad
-import Graphics.Vty
-import System.Random
-import qualified Data.Set as Set
+import Data.Array
+import Data.IORef
+import Data.Maybe
+import Data.List
 import Data.Set (Set)
+import Data.Map (Map)
+import Graphics.Vty
+import System.Console.GetOpt
+import System.Environment
+import System.Exit
+import System.Random
+import System.IO
+import qualified Data.Set as Set
+import qualified Data.Map as Map
 
 scoringFunction i = (i - 2) ^ (2 :: Int)
 clearScreenBonus  = 1000
 animationDelay    = 150000
-gameSize          = (9,14)
 
-mkNewGame :: IO GameState
-mkNewGame = do
-  arr <- newBoard gameSize
+mkNewGame :: Options -> IO GameState
+mkNewGame o = do
+  arr <- newBoard o
   return (mkGameState (0,0) arr Nothing 0)
 
 main :: IO ()
-main = bracket mkVty shutdown $ \vty -> do
+main = do
+ o <- getOptions
+ bracket mkVty shutdown $ \vty -> do
   eventVar <- newMVar Refresh
-  gameVar  <- newIORef =<< mkNewGame 
+  gameVar  <- newIORef =<< mkNewGame o
   forkIO (clock eventVar)
   forkIO (drawingThread vty eventVar gameVar 0)
   
@@ -42,7 +50,7 @@ main = bracket mkVty shutdown $ \vty -> do
           _                 -> loop
 
       restart = do
-        g <- mkNewGame
+        g <- mkNewGame o
         transform (\_ -> g)
 
       transform f = do
@@ -63,7 +71,7 @@ data GameState = GameState
   , lastScore          :: Maybe Int
   , totalScore         :: Int
   , gameOver           :: Bool
-  , redCount, greenCount, purpleCount :: Int
+  , counts             :: Map Piece Int
   }
 
 mkGameState ::
@@ -75,13 +83,12 @@ mkGameState ::
 mkGameState c a ls ts = GameState
   { cursorCoord        = c
   , boardArray         = a
-  , cachedConnectedSet = connectedSet c a
   , lastScore          = ls
   , totalScore         = ts
+  {- cached functions -}
+  , cachedConnectedSet = connectedSet c a
   , gameOver           = isGameOver a
-  , redCount           = length (filter (Just Red ==) (elems a))
-  , greenCount         = length (filter (Just Green ==) (elems a))
-  , purpleCount        = length (filter (Just Purple ==) (elems a))
+  , pieceCounts        = count (catMaybes (elems a))
   }
 
 coordUp, coordDown, coordLeft, coordRight :: Coord -> Coord
@@ -115,9 +122,7 @@ isGameOver :: Array Coord (Maybe Piece) -> Bool
 isGameOver a = not (any isPaired (assocs a))
   where
   isPaired (_,Nothing) = False
-  isPaired (c,Just p)  = any isMatch (neighbors a c)
-    where
-    isMatch x = a ! x == Just p
+  isPaired (c,Just p)  = Just p `elem` map (a !) (neighbors a c)
 
 deleteSet :: Set Coord -> Array Coord (Maybe Piece) -> Array Coord (Maybe Piece)
 deleteSet set arr = arr // [ (c, Nothing) | c <- Set.toList set ]
@@ -140,11 +145,11 @@ toCoords arr = concat . zipWith (\c -> zipWith (\r x -> ((r,c),x)) [rowHi,rowHi-
   where
   ((rowLo, colLo),(rowHi,colHi)) = bounds arr
 
-newBoard :: Coord -> IO (Array Coord (Maybe Piece))
-newBoard sz = do
-  let n = (fst sz + 1) * (snd sz + 1)
-  xs <- replicateM n randomPiece
-  return (listArray ((0,0),sz) (map Just xs))
+newBoard :: Options -> IO (Array Coord (Maybe Piece))
+newBoard o = do
+  let n = gameHeight o * gameWidth o
+  xs <- replicateM n (randomPiece (numColors o))
+  return (listArray ((0,0),(gameHeight o - 1, gameWidth o - 1)) (map Just xs))
 
 connectedSet :: Coord -> Array Coord (Maybe Piece) -> Set Coord
 connectedSet c arr = case arr ! c of
@@ -185,29 +190,32 @@ emptyChar = ' '
 
 data RedrawEvent = TimerTick | Refresh
 
-data Piece = Red | Purple | Green
-  deriving (Eq)
+data Piece = Red | Purple | Green | Yellow | Blue | White
+  deriving (Eq, Ord)
 
-randomPiece :: IO Piece
-randomPiece = do
-  x <- randomRIO (0, 2)
+randomPiece :: Int -> IO Piece
+randomPiece n = do
+  x <- randomRIO (1,n)
   return $! case x :: Int of
-    0 -> Red
-    1 -> Purple
-    2 -> Green
+    1 -> Red
+    2 -> Purple
+    3 -> Green
+    4 -> Yellow
+    5 -> Blue
+    6 -> White
 
 pieceToAttr :: Piece -> Attr
 pieceToAttr Red    = with_fore_color def_attr red
 pieceToAttr Green  = with_fore_color def_attr green
 pieceToAttr Purple = with_fore_color def_attr magenta
+pieceToAttr Yellow = with_fore_color def_attr yellow
+pieceToAttr Blue   = with_fore_color def_attr blue
+pieceToAttr White  = def_attr
 
 clock :: MVar RedrawEvent -> IO ()
 clock eventVar = forever $ do
   threadDelay animationDelay
   putMVar eventVar TimerTick
-
-toCursor :: Coord -> Cursor
-toCursor (r,c) = Cursor (fromIntegral c + 1) (fromIntegral r + 1)
 
 drawingThread :: Vty -> MVar RedrawEvent -> IORef GameState -> Int -> IO ()
 drawingThread vty eventVar gameVar ctr = do
@@ -216,34 +224,34 @@ drawingThread vty eventVar gameVar ctr = do
   let ctr' = (ctr + 1) `mod` animationLength
   case ev of
     TimerTick -> update vty (draw ctr' st) >> drawingThread vty eventVar gameVar ctr'
-    Refresh   -> update vty (draw ctr st) >> drawingThread vty eventVar gameVar ctr
+    Refresh   -> update vty (draw ctr  st) >> drawingThread vty eventVar gameVar ctr
 
-draw ctr st = Picture { pic_image = image
-                      , pic_cursor = toCursor (cursorCoord st)
+draw ctr st = Picture { pic_image      = image
+                      , pic_cursor     = toCursor (cursorCoord st)
                       , pic_background = Background ' ' def_attr }
   where
+  toCursor :: Coord -> Cursor
+  toCursor (r,c) = Cursor (fromIntegral c + 1) (fromIntegral r + 1)
+
   image = boxImage boardImage <|> char def_attr ' ' <|> infoImage
 
-  infoImage = string def_attr "══╡ CONSOLE GAME ╞══"
-          <-> char def_attr ' '
-          <-> string def_attr "Score: "
+  infoImage = vert_cat
+            $ intersperse (char def_attr ' ')
+            [ string def_attr "══╡ SAME GAME ╞══"
+            , string def_attr "Score: "
           <|> string (with_fore_color def_attr red) (show (totalScore st))
-          <-> char def_attr ' '
-          <-> countsImage
-          <-> char def_attr ' '
-          <-> lastScoreImage
-          <-> char def_attr ' '
-          <-> gameOverImage
-          <-> char def_attr ' '
-          <-> controlsImage
+            , countsImage
+            , lastScoreImage
+            , gameOverImage
+            , controlsImage
+            ]
 
   controlsImage = string def_attr "Controls: ←↑↓→ ␛ ⏎"
               <-> string def_attr "New game: N"
 
-  countsImage = string def_attr "Remaining: "
-            <|> string (pieceToAttr Red) (show (redCount st))
-            <|> string (pieceToAttr Green) (' ':show (greenCount st))
-            <|> string (pieceToAttr Purple) (' ':show (purpleCount st))
+  countsImage = string def_attr "Remaining:"
+            <|> horiz_cat [string (pieceToAttr p) (' ':show c)
+                          | (p,c) <- Map.toList (pieceCounts st)]
 
   lastScoreImage = case lastScore st of
     Nothing -> char def_attr ' '
@@ -276,3 +284,53 @@ boxImage img = c '┌' <|> hbar <|> c '┐'
   c = char def_attr
   hbar = char_fill def_attr '─' w 1
   vbar = char_fill def_attr '│' 1 h
+
+-- * Options
+
+data Options = Options
+  { numColors :: Int
+  , gameHeight :: Int
+  , gameWidth :: Int
+  }
+
+getOptions = do
+  args <- getArgs
+  case getOpt Permute optionDescrs args of
+    (fs,_,[]) -> foldM (\o f -> f o) defaultOptions fs
+    (_,_,errs) -> do hPutStrLn stderr (concat errs)
+                     exitFailure
+
+defaultOptions :: Options
+defaultOptions = Options 3 10 15
+
+optionDescrs = [Option [] ["colors"] (ReqArg setNumColors "1-6") "Set number of colors"
+               ,Option [] ["height"] (ReqArg setHeight "1-80") "Set board height"
+               ,Option [] ["width"] (ReqArg setWidth "1-80") "Set board width"
+               ]
+  where
+  setNumColors xs o =
+    case readMaybe xs of
+      Nothing                 -> fail "Unable to parse number of colors"
+      Just n | n < 1 || n > 6 -> fail "Number of colors out of range"
+             | otherwise      -> return o { numColors = n }
+
+  setHeight xs o =
+    case readMaybe xs of
+      Nothing                  -> fail "Unable to parse height"
+      Just n | n < 1 || n > 80 -> fail "Board height out of range"
+             | otherwise       -> return o { gameHeight = n }
+
+  setWidth xs o =
+    case readMaybe xs of
+      Nothing                  -> fail "Unable to parse width"
+      Just n | n < 1 || n > 80 -> fail "Board width out of range"
+             | otherwise       -> return o { gameWidth = n }
+
+-- * Utility functions
+
+readMaybe xs = case reads xs of
+  [(a,"")] -> Just a
+  _        -> Nothing
+
+count :: Ord k => [k] -> Map k Int
+count = foldl' (\acc k -> Map.insertWith' (+) k 1 acc) Map.empty
